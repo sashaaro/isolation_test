@@ -79,11 +79,11 @@ func createPool() *pgxpool.Pool {
 	return pool
 }
 func createAliceBob(pool *pgxpool.Pool) (*pgxpool.Conn, *pgxpool.Conn) {
-	alice, err := pool.Acquire(context.Background()) //pgx.Connect(context.Background(), databaseUrl)
+	alice, err := pool.Acquire(context.Background()) //createPool().Acquire(context.Background())
 	if err != nil {
 		panic(err)
 	}
-	bob, err := pool.Acquire(context.Background()) //pgx.Connect(context.Background(), databaseUrl)
+	bob, err := pool.Acquire(context.Background()) //createPool().Acquire(context.Background())
 	if err != nil {
 		panic(err)
 	}
@@ -95,9 +95,9 @@ const defaultIsolationLevel = pgx.ReadCommitted
 
 func createTx(conn *pgxpool.Conn, isolationLevel pgx.TxIsoLevel) pgx.Tx {
 	tx, err := conn.BeginTx(context.Background(), pgx.TxOptions{
-		IsoLevel:   isolationLevel,
-		AccessMode: pgx.ReadWrite,
-		//DeferrableMode: pgx.Deferrable,
+		IsoLevel:       isolationLevel,
+		AccessMode:     pgx.ReadWrite,
+		DeferrableMode: pgx.NotDeferrable,
 	})
 	if err != nil {
 		panic(err)

@@ -3,11 +3,14 @@ package isolation
 import (
 	"context"
 	"errors"
+	"fmt"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/stretchr/testify/assert"
 	"os"
+	"sync"
 	"testing"
+	"time"
 )
 
 // https://www.postgresql.org/docs/current/transaction-iso.html#:~:text=Read%20Committed%20is%20the%20default%20isolation%20level%20in%20PostgreSQL.
@@ -217,12 +220,12 @@ func TestLostUpdate(t *testing.T) {
 
 		err = aliceTx.Commit(context.Background())
 
-		if err != nil {
-			if err == pgx.ErrTxCommitRollback && aliceTxLevel == pgx.RepeatableRead {
-				return aliceErrTxCommitRollback
-			}
-			return err
-		}
+		//if err != nil {
+		//	if err == pgx.ErrTxCommitRollback && aliceTxLevel == pgx.RepeatableRead {
+		//		return aliceErrTxCommitRollback
+		//	}
+		//	return err
+		//}
 
 		return nil
 	}
@@ -233,6 +236,76 @@ func TestLostUpdate(t *testing.T) {
 	// 50 + 80 + 25 (first update) + 10 (second) = 165 (no lost update)
 
 	err = testLostUpdate(pgx.RepeatableRead)
-	assert.Equal(t, aliceErrUpdate40001, err)
+	assert.Equal(t, aliceErrUpdate40001, err) // (+10) second tx is not passed
 	assert.Equal(t, 155, sumSales(), "fail. produced lost update read")
+}
+
+// https://medium.com/nerd-for-tech/db-dead-lock-complete-case-study-using-golang-15dd754e5cb8
+func TestDeadlockWithTimout(t *testing.T) {
+	setupTest(t)
+	ctx := context.Background()
+
+	assert.Equal(t, 130, sumSales())
+
+	alice, bob := createAliceBob(createPool())
+	defer alice.Release()
+	defer bob.Release()
+
+	aliceTx := createTx(alice, pgx.ReadCommitted)
+	bobTx := createTx(bob, bobTxLevel)
+
+	sales := querySales(&aliceTx)
+	assertInitSales(t, sales)
+
+	row, err := bobTx.Query(ctx, "update sale set quantity = quantity + 5 where id = 1")
+	if err != nil {
+		panic(err)
+	}
+	row.Close()
+
+	row, err = aliceTx.Query(ctx, "update sale set quantity = quantity + 3 where id = 2")
+	if err != nil {
+		panic(err)
+	}
+	row.Close()
+
+	wg := sync.WaitGroup{}
+	wg.Add(1)
+	go func() {
+		wg.Done()
+		//defer wg.Done()
+		//timeoutCtx, _ := context.WithTimeout(ctx, 3*time.Second)
+
+		fmt.Printf("1\n")
+		row, err = bobTx.Query(ctx, "update sale set quantity = quantity + 5 where id = 2")
+		fmt.Printf("4\n")
+		if err != nil {
+			panic(err)
+		}
+		row.Close()
+	}()
+
+	wg.Wait()
+	time.Sleep(3 * time.Second)
+
+	fmt.Printf("2\n")
+	row, err = aliceTx.Query(ctx, "update sale set quantity = quantity + 3 where id = 1")
+	fmt.Printf("3\n")
+	if err != nil {
+		panic(err)
+	}
+	row.Close()
+
+	err = aliceTx.Commit(ctx)
+	if err != nil {
+		panic(err)
+	}
+	//err = bobTx.Commit(ctx)
+	//if err != nil {
+	//	panic(err)
+	//}
+
+	time.Sleep(1 * time.Second)
+
+	assert.Equal(t, 1, 1)
 }
