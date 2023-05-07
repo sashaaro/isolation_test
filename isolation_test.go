@@ -21,31 +21,21 @@ const bobTxLevel = pgx.ReadCommitted // any tx level is allowed, test should pas
 
 func setupTest(t *testing.T) func(t *testing.T) {
 	pool, err := createPool().Acquire(context.Background())
-	if err != nil {
-		panic(err)
-	}
+	assert.NoError(t, err) // lost update 75 + 80 = 135
 	conn := pool.Conn()
 
 	row, err := conn.Query(context.Background(), "TRUNCATE sale")
-	if err != nil {
-		panic(err)
-	}
+	assert.NoError(t, err) // lost update 75 + 80 = 135
 	row.Close()
 
 	sql, err := os.ReadFile("./fixtures.sql")
-	if err != nil {
-		panic(err)
-	}
+	assert.NoError(t, err) // lost update 75 + 80 = 135
 
 	_, err = conn.Exec(context.Background(), string(sql))
-	if err != nil {
-		panic(err)
-	}
+	assert.NoError(t, err) // lost update 75 + 80 = 135
 
 	err = conn.Close(context.Background())
-	if err != nil {
-		panic(err)
-	}
+	assert.NoError(t, err) // lost update 75 + 80 = 135
 
 	//fmt.Println("load fixtures...")
 
@@ -73,9 +63,7 @@ func TestUncommittedDirtyRead(t *testing.T) {
 	assertInitSales(t, sales)
 
 	row, err := bobTx.Query(context.Background(), "update sale set quantity = quantity + 5 where id = 1")
-	if err != nil {
-		panic(err)
-	}
+	assert.NoError(t, err) // lost update 75 + 80 = 135
 	row.Close()
 
 	sum := sumSalesWithTx(&aliceTx)
@@ -100,14 +88,10 @@ func TestNonRepeatableRead(t *testing.T) {
 		assertInitSales(t, sales)
 
 		row, err := bobTx.Query(context.Background(), "update sale set quantity = quantity + 5 where id = 1")
-		if err != nil {
-			panic(err)
-		}
+		assert.NoError(t, err) // lost update 75 + 80 = 135
 		row.Close()
 		err = bobTx.Commit(context.Background())
-		if err != nil {
-			panic(err)
-		}
+		assert.NoError(t, err) // lost update 75 + 80 = 135
 		return sumSalesWithTx(&aliceTx)
 	}
 
@@ -136,15 +120,11 @@ func TestPhantomRead(t *testing.T) {
 		assertInitSales(t, sales)
 
 		row, err := bobTx.Query(context.Background(), "insert into sale values (3, 3, 1, 10)")
-		if err != nil {
-			panic(err)
-		}
+		assert.NoError(t, err) // lost update 75 + 80 = 135
 		row.Close()
 
 		err = bobTx.Commit(context.Background())
-		if err != nil {
-			panic(err)
-		}
+		assert.NoError(t, err) // lost update 75 + 80 = 135
 
 		return sumSalesWithTx(&aliceTx)
 	}
@@ -180,32 +160,24 @@ func TestLostUpdate(t *testing.T) {
 		var bobQuantity int
 		var aliceQuantity int
 		err := bobTx.QueryRow(context.Background(), "select quantity from sale where id = 1").Scan(&bobQuantity)
-		if err != nil {
-			return err
-		}
+		assert.NoError(t, err) // lost update 75 + 80 = 135
 		if bobQuantity != 10 {
 			t.Errorf("bob quantity is wrong. should is 10, actual is %v, fixture broken", bobQuantity)
 		}
 
 		err = aliceTx.QueryRow(context.Background(), "select quantity from sale where id = 1").Scan(&aliceQuantity)
-		if err != nil {
-			return err
-		}
+		assert.NoError(t, err) // lost update 75 + 80 = 135
 		if aliceQuantity != 10 {
 			t.Errorf("alice quantity is wrong. should is 10, actual is %v. read committed not work", aliceQuantity)
 		}
 
 		// update sale set quantity = quantity + 5 where id = 1 should work same
 		row, err := bobTx.Query(context.Background(), "update sale set quantity = $1 where id = 1", bobQuantity+5) // (10 + 5) * 5 = 75, add 25
-		if err != nil {
-			return err
-		}
+		assert.NoError(t, err)                                                                                     // lost update 75 + 80 = 135
 		row.Close()
 
 		err = bobTx.Commit(context.Background())
-		if err != nil {
-			return err
-		}
+		assert.NoError(t, err) // lost update 75 + 80 = 135
 
 		tag, err := aliceTx.Exec(context.Background(), "update sale set quantity = $1 where id = 1", aliceQuantity+2) // (12 + 5) * 5 = 60, add 10
 		if err != nil {
