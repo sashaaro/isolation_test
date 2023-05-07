@@ -310,7 +310,7 @@ func TestForShare(t *testing.T) {
 	_, err = aliceTx.Exec(ctx, "select * from sale where id = 1")
 	assert.NoError(t, err)
 
-	_, err = aliceTx.Exec(ctx, "SET LOCAL lock_timeout = '1s';")
+	_, err = aliceTx.Exec(ctx, "SET LOCAL lock_timeout = '0.5s';")
 	assert.NoError(t, err)
 
 	_, err = aliceTx.Exec(ctx, "select * from sale where id = 1 for update")
@@ -338,7 +338,7 @@ func TestForUpdate(t *testing.T) {
 	_, err := bobTx.Exec(ctx, "select * from sale where id = 1 for update")
 	assert.NoError(t, err)
 
-	_, err = aliceTx.Exec(ctx, "SET LOCAL lock_timeout = '1s';")
+	_, err = aliceTx.Exec(ctx, "SET LOCAL lock_timeout = '0.5s';")
 	assert.NoError(t, err)
 	_, err = aliceTx.Exec(ctx, "select * from sale where id = 1 for share")
 

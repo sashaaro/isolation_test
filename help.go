@@ -83,10 +83,12 @@ func createAliceBob(pool *pgxpool.Pool) (*pgxpool.Conn, *pgxpool.Conn) {
 	if err != nil {
 		panic(err)
 	}
+	_, _ = alice.Exec(context.Background(), `set application_name to "Alice"`)
 	bob, err := pool.Acquire(context.Background()) //createPool().Acquire(context.Background())
 	if err != nil {
 		panic(err)
 	}
+	_, _ = bob.Exec(context.Background(), `set application_name to "Bob"`)
 
 	return alice, bob
 }
