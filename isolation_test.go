@@ -3,14 +3,14 @@ package isolation
 import (
 	"context"
 	"errors"
-	"fmt"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
-	"github.com/stretchr/testify/assert"
 	"os"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/stretchr/testify/assert"
 )
 
 // https://www.postgresql.org/docs/current/transaction-iso.html#:~:text=Read%20Committed%20is%20the%20default%20isolation%20level%20in%20PostgreSQL.
@@ -195,6 +195,7 @@ func TestLostUpdate(t *testing.T) {
 			t.Errorf("alice quantity is wrong. should is 10, actual is %v. read committed not work", aliceQuantity)
 		}
 
+		// update sale set quantity = quantity + 5 where id = 1 should work same
 		row, err := bobTx.Query(context.Background(), "update sale set quantity = $1 where id = 1", bobQuantity+5) // (10 + 5) * 5 = 75, add 25
 		if err != nil {
 			return err
@@ -257,55 +258,29 @@ func TestDeadlockWithTimout(t *testing.T) {
 	sales := querySales(&aliceTx)
 	assertInitSales(t, sales)
 
-	row, err := bobTx.Query(ctx, "update sale set quantity = quantity + 5 where id = 1")
+	_, err := bobTx.Exec(ctx, "update sale set quantity = quantity + 5 where id = 1")
 	if err != nil {
 		panic(err)
 	}
-	row.Close()
 
-	row, err = aliceTx.Query(ctx, "update sale set quantity = quantity + 3 where id = 2")
+	_, err = aliceTx.Exec(ctx, "update sale set quantity = quantity + 3 where id = 2")
 	if err != nil {
 		panic(err)
 	}
-	row.Close()
 
 	wg := sync.WaitGroup{}
 	wg.Add(1)
 	go func() {
-		wg.Done()
-		//defer wg.Done()
-		//timeoutCtx, _ := context.WithTimeout(ctx, 3*time.Second)
+		defer wg.Done()
 
-		fmt.Printf("1\n")
-		row, err = bobTx.Query(ctx, "update sale set quantity = quantity + 5 where id = 2")
-		fmt.Printf("4\n")
-		if err != nil {
-			panic(err)
-		}
-		row.Close()
+		_, _ = bobTx.Exec(ctx, "update sale set quantity = quantity + 5 where id = 2")
 	}()
 
-	wg.Wait()
-	time.Sleep(3 * time.Second)
-
-	fmt.Printf("2\n")
-	row, err = aliceTx.Query(ctx, "update sale set quantity = quantity + 3 where id = 1")
-	fmt.Printf("3\n")
-	if err != nil {
-		panic(err)
-	}
-	row.Close()
-
-	err = aliceTx.Commit(ctx)
-	if err != nil {
-		panic(err)
-	}
-	//err = bobTx.Commit(ctx)
-	//if err != nil {
-	//	panic(err)
-	//}
-
 	time.Sleep(1 * time.Second)
+	_, err = aliceTx.Exec(ctx, "update sale set quantity = quantity + 3 where id = 1")
+	assert.Error(t, err)
+	assert.Equal(t, "40P01", err.(*pgconn.PgError).Code)
+	assert.Equal(t, "deadlock detected", err.(*pgconn.PgError).Message)
 
-	assert.Equal(t, 1, 1)
+	// lost update 75 + 80 = 135
 }
