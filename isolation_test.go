@@ -346,3 +346,33 @@ func TestForUpdate(t *testing.T) {
 	assert.Equal(t, "55P03", err.(*pgconn.PgError).Code)
 	assert.Equal(t, "canceling statement due to lock timeout", err.(*pgconn.PgError).Message)
 }
+
+func TestAdvisoryLock(t *testing.T) {
+	setupTest(t)
+	ctx := context.Background()
+
+	assert.Equal(t, 130, sumSales())
+
+	alice, bob := createAliceBob(createPool())
+	defer alice.Release()
+	defer bob.Release()
+
+	aliceTx := createTx(alice, pgx.ReadCommitted)
+	bobTx := createTx(bob, bobTxLevel)
+
+	sales := querySales(&aliceTx)
+	assertInitSales(t, sales)
+
+	_, err := bobTx.Exec(ctx, "select pg_advisory_xact_lock_shared(1)")
+	assert.NoError(t, err)
+
+	_, err = aliceTx.Exec(ctx, "SET LOCAL lock_timeout = '1s';")
+	assert.NoError(t, err)
+	_, err = aliceTx.Exec(ctx, "select pg_advisory_xact_lock_shared(1)")
+	assert.NoError(t, err)
+
+	_, err = aliceTx.Exec(ctx, "select pg_advisory_xact_lock(1)")
+	assert.Error(t, err)
+	assert.Equal(t, "55P03", err.(*pgconn.PgError).Code)
+	assert.Equal(t, "canceling statement due to lock timeout", err.(*pgconn.PgError).Message)
+}
