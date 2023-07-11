@@ -2,11 +2,13 @@ package isolation
 
 import (
 	"context"
+	"os"
+	"testing"
+
 	"github.com/georgysavva/scany/v2/pgxscan"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"os"
-	"testing"
+	"github.com/stretchr/testify/assert"
 )
 
 type Sale struct {
@@ -31,6 +33,13 @@ func sumSalesWithTx(tx *pgx.Tx) int {
 		panic(err)
 	}
 	return sum
+}
+
+func readAndCheckFirstSale(t assert.TestingT, tx pgx.Tx) {
+	var quantity int
+	err := tx.QueryRow(context.Background(), "SELECT quantity FROM sale WHERE id = 1").Scan(&quantity)
+	assert.NoError(t, err)
+	assert.Equal(t, 3, quantity)
 }
 
 func sumSales() int {
@@ -62,7 +71,7 @@ func assertInitSales(t *testing.T, sales []*Sale) {
 		t.Errorf("Sales count not equal 2")
 	}
 
-	if calc(*sales[0]) != 50 || calc(*sales[1]) != 80 {
+	if calc(*sales[0]) != 30 || calc(*sales[1]) != 80 {
 		t.Errorf("Sales fixtures wrong")
 	}
 }
