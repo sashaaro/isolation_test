@@ -16,6 +16,7 @@ import (
 // https://www.postgresql.org/docs/current/transaction-iso.html#:~:text=Read%20Committed%20is%20the%20default%20isolation%20level%20in%20PostgreSQL.
 // https://www.youtube.com/watch?v=pomxJOFVcQs
 // https://en.wikipedia.org/wiki/Isolation_(database_systems)#Phantom_reads
+// https://www.youtube.com/watch?v=e9a4ESSHQ74
 
 const bobTxLevel = pgx.ReadCommitted // any tx level is allowed, test should pass, no effect for Alice's transaction
 
@@ -67,7 +68,7 @@ func TestUncommittedDirtyRead(t *testing.T) {
 	row.Close()
 
 	sum := sumSalesWithTx(&aliceTx)
-	if sum == 155 {
+	if sum != 130 {
 		t.Errorf("fail. produced dirty read sum equals %v", sum)
 	}
 	// not allow in pg
@@ -95,13 +96,13 @@ func TestNonRepeatableRead(t *testing.T) {
 		return sumSalesWithTx(&aliceTx)
 	}
 
-	sum := testNonRepeatableRead(pgx.ReadCommitted) // expect 155 if no repeatable read
-	if sum == 130 {
+	sum := testNonRepeatableRead(pgx.ReadCommitted)
+	if sum != 155 {
 		t.Errorf("fail. no produced non repeatable read sum equals %v", sum)
 	}
 
 	sum = testNonRepeatableRead(pgx.RepeatableRead)
-	if sum == 155 {
+	if sum != 130 {
 		t.Errorf("fail. no produced non repeatable read sum equals %v", sum)
 	}
 }
@@ -347,4 +348,27 @@ func TestAdvisoryLock(t *testing.T) {
 	assert.Error(t, err)
 	assert.Equal(t, "55P03", err.(*pgconn.PgError).Code)
 	assert.Equal(t, "canceling statement due to lock timeout", err.(*pgconn.PgError).Message)
+}
+
+func TestDeadlock(t *testing.T) {
+	setupTest(t)
+	ctx := context.Background()
+
+	assert.Equal(t, 130, sumSales())
+	pool := createPool()
+
+	var wg sync.WaitGroup
+	for i := 0; i < 1000; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			tx, err := pool.BeginTx(ctx, pgx.TxOptions{})
+			_, err = tx.Exec(ctx, "UPDATE sale SET price = price + 1 WHERE id = 1")
+			assert.NoError(t, err)
+			err = tx.Commit(ctx)
+			assert.NoError(t, err)
+		}()
+	}
+
+	wg.Wait()
 }
