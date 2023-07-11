@@ -29,9 +29,8 @@ func setupTest(t *testing.T) func(t *testing.T) {
 	assert.NoError(t, err)
 	conn := pool.Conn()
 
-	row, err := conn.Query(context.Background(), "TRUNCATE sale")
+	_, err = conn.Exec(context.Background(), "TRUNCATE account")
 	assert.NoError(t, err)
-	row.Close()
 
 	sql, err := os.ReadFile("./fixtures.sql")
 	assert.NoError(t, err)
@@ -64,20 +63,20 @@ func TestUncommittedDirtyRead(t *testing.T) {
 	aliceTx := createTx(alice, defaultBobTxLevel)
 	bobTx := createTx(bob, pgx.ReadCommitted)
 
-	sales := querySales(&aliceTx)
-	assertInitSales(t, sales)
+	acc := queryAccounts(&aliceTx)
+	assertInitAccounts(t, acc)
 
-	row, err := aliceTx.Query(context.Background(), "update sale set quantity = quantity + 1 where id = 1")
+	r, err := aliceTx.Exec(context.Background(), "update account set balance = balance + 5 where name = 'A'")
 	assert.NoError(t, err)
-	row.Close()
+	assert.Equal(t, int64(1), r.RowsAffected())
 
-	sum := sumSalesWithTx(&aliceTx)
-	if sum != 120 {
+	sum := sumWithTx(&aliceTx)
+	if sum != 35 {
 		t.Errorf("alice should see own uncommitted changes %v", sum)
 	}
 
-	sum = sumSalesWithTx(&bobTx)
-	if sum != 110 {
+	sum = sumWithTx(&bobTx)
+	if sum != 30 {
 		t.Errorf("bob should not see uncommitted alice changes %v", sum)
 	}
 }
@@ -93,29 +92,29 @@ func TestNonRepeatableRead(t *testing.T) {
 		aliceTx := createTx(bob, defaultBobTxLevel)
 		bobTx := createTx(alice, aliceTxLevel)
 
-		// bob read all sales
-		sales := querySales(&bobTx)
-		assertInitSales(t, sales)
+		// bob read all
+		assertInitAccounts(t, queryAccounts(&bobTx))
 
-		row, err := aliceTx.Query(context.Background(), "update sale set quantity = quantity + 1 where id = 1")
+		r, err := aliceTx.Exec(context.Background(), "UPDATE account SET balance = balance + 1 where name = 'A'")
 		assert.NoError(t, err)
-		row.Close()
+		assert.Equal(t, int64(1), r.RowsAffected())
+
 		err = aliceTx.Commit(context.Background())
 		assert.NoError(t, err)
-		return sumSalesWithTx(&bobTx)
+		return sumWithTx(&bobTx)
 	}
 
 	sum := testNonRepeatableRead(pgx.ReadCommitted)
-	if sum != 120 {
+	if sum != 31 {
 		t.Errorf("bob should not use repeatable read & sum should be update. sum:  %v", sum)
 	}
 
 	sum = testNonRepeatableRead(pgx.RepeatableRead)
-	if sum != 110 {
+	if sum != 30 {
 		t.Errorf("bob should return no update sum. sum: %v", sum)
 	}
 	sum = testNonRepeatableRead(pgx.Serializable)
-	if sum != 110 {
+	if sum != 30 {
 		t.Errorf("bob should return no update sum. sum: %v", sum)
 	}
 }
@@ -130,32 +129,31 @@ func TestPhantomRead(t *testing.T) {
 		aliceTx := createTx(alice, defaultBobTxLevel)
 		bobTx := createTx(bob, aliceTxLevel)
 
-		// bob read all sales
-		sales := querySales(&bobTx)
-		assertInitSales(t, sales)
+		// bob read all
+		assertInitAccounts(t, queryAccounts(&bobTx))
 
-		row, err := aliceTx.Query(context.Background(), "insert into sale values (3, 3, 1, 10)")
+		r, err := aliceTx.Exec(context.Background(), "INSERT INTO account values ('C', 30)")
 		assert.NoError(t, err)
-		row.Close()
+		assert.Equal(t, int64(1), r.RowsAffected())
 
 		err = aliceTx.Commit(context.Background())
 		assert.NoError(t, err)
 
-		return sumSalesWithTx(&bobTx)
+		return sumWithTx(&bobTx)
 	}
 
 	sum := testPhantomRead(pgx.ReadCommitted)
-	if sum != 120 {
+	if sum != 60 {
 		t.Errorf("bob should return updated sum. sum: %v", sum)
 	}
 
 	// no include inserted record
 	sum = testPhantomRead(pgx.RepeatableRead)
-	if sum != 110 {
+	if sum != 30 {
 		t.Errorf("bob should see no updated sum. sum: %v", sum)
 	}
 	sum = testPhantomRead(pgx.Serializable)
-	if sum != 110 {
+	if sum != 30 {
 		t.Errorf("bob should see no updated sum. sum: %v", sum)
 	}
 }
@@ -174,17 +172,17 @@ func TestLostUpdate(t *testing.T) {
 		aliceTx := createTx(alice, defaultBobTxLevel)
 		bobTx := createTx(bob, bobTxLevel)
 
-		// bob read first sale record
-		readAndCheckFirstSale(t, bobTx)
+		// bob read first record
+		readAndCheckFirstAcc(t, bobTx)
 
-		row, err := aliceTx.Query(ctx, "UPDATE sale SET quantity = $1 WHERE id = 1", 4)
+		r, err := aliceTx.Exec(ctx, "UPDATE account SET balance = $1 WHERE name = 'A'", 4)
 		assert.NoError(t, err)
-		row.Close()
+		assert.Equal(t, int64(1), r.RowsAffected())
 
 		err = aliceTx.Commit(ctx)
 		assert.NoError(t, err)
 
-		tag, err := bobTx.Exec(ctx, "UPDATE sale SET quantity = $1 WHERE id = 1", 5)
+		r, err = bobTx.Exec(ctx, "UPDATE account SET balance = $1 WHERE name = 'A'", 5)
 		if err != nil {
 			pgErr, ok := err.(*pgconn.PgError)
 			if bobTxLevel != pgx.ReadCommitted && ok && pgErr.Code == "40001" {
@@ -192,9 +190,7 @@ func TestLostUpdate(t *testing.T) {
 			}
 			return err
 		}
-		if tag.Update() && tag.RowsAffected() != 1 {
-			return errors.New("no update one sale row")
-		}
+		assert.Equal(t, int64(1), r.RowsAffected())
 
 		err = bobTx.Commit(ctx)
 
@@ -210,15 +206,15 @@ func TestLostUpdate(t *testing.T) {
 
 	err := testLostUpdate(pgx.ReadCommitted)
 	assert.NoError(t, err)
-	assert.Equal(t, 130, sumSales(), "fail. no produced lost update read") // bob update +2 pass, but lose alice +1
+	assert.Equal(t, 25, sumBalance(), "fail. no produced lost update read") // bob update +2 pass, but lose alice +1
 
 	err = testLostUpdate(pgx.RepeatableRead)
 	assert.Equal(t, aliceErrUpdate40001, err)
-	assert.Equal(t, 120, sumSales(), "fail. produced lost update read") // alice update +1 pass, bob update rejected
+	assert.Equal(t, 24, sumBalance(), "fail. produced lost update read") // alice update +1 pass, bob update rejected
 
 	err = testLostUpdate(pgx.Serializable)
 	assert.Equal(t, aliceErrUpdate40001, err)
-	assert.Equal(t, 120, sumSales(), "fail. produced lost update read")
+	assert.Equal(t, 24, sumBalance(), "fail. produced lost update read")
 }
 
 // https://medium.com/nerd-for-tech/db-dead-lock-complete-case-study-using-golang-15dd754e5cb8
@@ -226,7 +222,7 @@ func TestDeadlockWithTimout(t *testing.T) {
 	setupTest(t)
 	ctx := context.Background()
 
-	assert.Equal(t, 110, sumSales())
+	assert.Equal(t, 30, sumBalance())
 
 	alice, bob := createAliceBob(createPool())
 	defer alice.Release()
@@ -235,10 +231,9 @@ func TestDeadlockWithTimout(t *testing.T) {
 	aliceTx := createTx(alice, defaultBobTxLevel)
 	bobTx := createTx(bob, defaultBobTxLevel)
 
-	sales := querySales(&aliceTx)
-	assertInitSales(t, sales)
+	assertInitAccounts(t, queryAccounts(&aliceTx))
 
-	_, err := bobTx.Exec(ctx, "update sale set quantity = quantity + 5 where id = 1")
+	_, err := bobTx.Exec(ctx, "UPDATE account SET balance = balance + 5 WHERE name = 'A'")
 	if err != nil {
 		panic(err)
 	}
@@ -246,7 +241,7 @@ func TestDeadlockWithTimout(t *testing.T) {
 	// _, err = bobTx.Exec(ctx, "SET LOCAL lock_timeout = '0.5s';")
 	// assert.NoError(t, err)
 
-	_, err = aliceTx.Exec(ctx, "update sale set quantity = quantity + 3 where id = 2")
+	_, err = aliceTx.Exec(ctx, "UPDATE account SET balance = balance + 4 WHERE name = 'B'")
 	if err != nil {
 		panic(err)
 	}
@@ -256,11 +251,11 @@ func TestDeadlockWithTimout(t *testing.T) {
 	go func() {
 		defer wg.Done()
 
-		_, _ = bobTx.Exec(ctx, "update sale set quantity = quantity + 5 where id = 2")
+		_, _ = bobTx.Exec(ctx, "UPDATE account SET balance = balance + 3 WHERE name = 'B'")
 	}()
 
 	time.Sleep(1 * time.Second)
-	_, err = aliceTx.Exec(ctx, "update sale set quantity = quantity + 3 where id = 1")
+	_, err = aliceTx.Exec(ctx, "UPDATE account SET balance = balance + 2 WHERE name = 'A'")
 	assert.Error(t, err)
 	assert.Equal(t, "40P01", err.(*pgconn.PgError).Code)
 	assert.Equal(t, "deadlock detected", err.(*pgconn.PgError).Message)
@@ -270,7 +265,7 @@ func TestForShare(t *testing.T) {
 	setupTest(t)
 	ctx := context.Background()
 
-	assert.Equal(t, 110, sumSales())
+	assert.Equal(t, 30, sumBalance())
 
 	alice, bob := createAliceBob(createPool())
 	defer alice.Release()
@@ -279,22 +274,22 @@ func TestForShare(t *testing.T) {
 	aliceTx := createTx(alice, defaultBobTxLevel)
 	bobTx := createTx(bob, pgx.ReadCommitted) // no matter even serializable
 
-	sales := querySales(&bobTx)
-	assertInitSales(t, sales)
+	accs := queryAccounts(&bobTx)
+	assertInitAccounts(t, accs)
 
-	_, err := aliceTx.Exec(ctx, "SELECT * FROM sale WHERE id = 1 FOR SHARE")
+	_, err := aliceTx.Exec(ctx, "SELECT * FROM account WHERE name = 'A' FOR SHARE")
 	assert.NoError(t, err)
 
-	_, err = bobTx.Exec(ctx, "SELECT * FROM sale WHERE id = 1 FOR SHARE")
+	_, err = bobTx.Exec(ctx, "SELECT * FROM account WHERE name = 'A' FOR SHARE")
 	assert.NoError(t, err)
 
-	_, err = bobTx.Exec(ctx, "SELECT * FROM sale WHERE id = 1")
+	_, err = bobTx.Exec(ctx, "SELECT * FROM account WHERE name = 'A'")
 	assert.NoError(t, err)
 
 	_, err = bobTx.Exec(ctx, "SET LOCAL lock_timeout = '0.1s';")
 	assert.NoError(t, err)
 
-	_, err = bobTx.Exec(ctx, "SELECT * FROM sale WHERE id = 1 FOR UPDATE")
+	_, err = bobTx.Exec(ctx, "SELECT * FROM account WHERE name = 'A' FOR UPDATE")
 	assert.Error(t, err)
 	assert.Equal(t, "55P03", err.(*pgconn.PgError).Code)
 	assert.Equal(t, "canceling statement due to lock timeout", err.(*pgconn.PgError).Message)
@@ -304,7 +299,7 @@ func TestForUpdate(t *testing.T) {
 	setupTest(t)
 	ctx := context.Background()
 
-	assert.Equal(t, 110, sumSales())
+	assert.Equal(t, 30, sumBalance())
 
 	alice, bob := createAliceBob(createPool())
 	defer alice.Release()
@@ -313,15 +308,15 @@ func TestForUpdate(t *testing.T) {
 	aliceTx := createTx(alice, defaultBobTxLevel)
 	bobTx := createTx(bob, pgx.ReadCommitted)
 
-	sales := querySales(&bobTx)
-	assertInitSales(t, sales)
+	accs := queryAccounts(&bobTx)
+	assertInitAccounts(t, accs)
 
-	_, err := aliceTx.Exec(ctx, "SELECT * FROM sale WHERE id = 1 FOR UPDATE")
+	_, err := aliceTx.Exec(ctx, "SELECT * FROM account WHERE name = 'A' FOR UPDATE")
 	assert.NoError(t, err)
 
 	_, err = bobTx.Exec(ctx, "SET LOCAL lock_timeout = '0.1s';")
 	assert.NoError(t, err)
-	_, err = bobTx.Exec(ctx, "SELECT * FROM sale WHERE id = 1 FOR SHARE")
+	_, err = bobTx.Exec(ctx, "SELECT * FROM account WHERE name = 'A' FOR SHARE")
 
 	assert.Error(t, err)
 	assert.Equal(t, "55P03", err.(*pgconn.PgError).Code)
@@ -332,7 +327,7 @@ func TestAdvisoryLock(t *testing.T) {
 	setupTest(t)
 	ctx := context.Background()
 
-	assert.Equal(t, 110, sumSales())
+	assert.Equal(t, 30, sumBalance())
 
 	alice, bob := createAliceBob(createPool())
 	defer alice.Release()
@@ -341,8 +336,7 @@ func TestAdvisoryLock(t *testing.T) {
 	aliceTx := createTx(alice, defaultBobTxLevel)
 	bobTx := createTx(bob, pgx.ReadCommitted)
 
-	sales := querySales(&bobTx)
-	assertInitSales(t, sales)
+	assertInitAccounts(t, queryAccounts(&bobTx))
 
 	_, err := aliceTx.Exec(ctx, "SELECT pg_advisory_xact_lock_shared(1)")
 	assert.NoError(t, err)
@@ -362,7 +356,7 @@ func TestDeadlock(t *testing.T) {
 	setupTest(t)
 	ctx := context.Background()
 
-	assert.Equal(t, 110, sumSales())
+	assert.Equal(t, 30, sumBalance())
 	pool := createPool()
 
 	var wg sync.WaitGroup
@@ -371,7 +365,7 @@ func TestDeadlock(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			tx, err := pool.BeginTx(ctx, pgx.TxOptions{})
-			_, err = tx.Exec(ctx, "UPDATE sale SET price = price + 1 WHERE id = 1")
+			_, err = tx.Exec(ctx, "UPDATE account SET balance = balance + 1 WHERE name = 'A'")
 			assert.NoError(t, err)
 			err = tx.Commit(ctx)
 			assert.NoError(t, err)
@@ -382,7 +376,7 @@ func TestDeadlock(t *testing.T) {
 
 	tx, err := pool.BeginTx(ctx, pgx.TxOptions{})
 	var p int
-	err = tx.QueryRow(context.Background(), "SELECT price FROM sale WHERE id = 1").Scan(&p)
+	err = tx.QueryRow(context.Background(), "SELECT balance FROM account WHERE name = 'A'").Scan(&p)
 	assert.NoError(t, err)
 	assert.Equal(t, 1010, p)
 }

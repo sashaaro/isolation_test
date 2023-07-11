@@ -11,38 +11,37 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-type Sale struct {
-	ProductId int
-	Quantity  int
-	Price     int
+type Account struct {
+	Name    string
+	Balance int
 }
 
-func querySales(tx *pgx.Tx) []*Sale {
-	var sales []*Sale
-	err := pgxscan.Select(context.Background(), *tx, &sales, "select product_id, quantity, price from sale")
+func queryAccounts(tx *pgx.Tx) []*Account {
+	var l []*Account
+	err := pgxscan.Select(context.Background(), *tx, &l, "Select name, balance FROM account")
 	if err != nil {
 		panic(err)
 	}
-	return sales
+	return l
 }
 
-func sumSalesWithTx(tx *pgx.Tx) int {
+func sumWithTx(tx *pgx.Tx) int {
 	var sum int
-	err := (*tx).QueryRow(context.Background(), "select sum(quantity * price) from sale").Scan(&sum)
+	err := (*tx).QueryRow(context.Background(), "SELECT sum(balance) FROM account").Scan(&sum)
 	if err != nil {
 		panic(err)
 	}
 	return sum
 }
 
-func readAndCheckFirstSale(t assert.TestingT, tx pgx.Tx) {
+func readAndCheckFirstAcc(t assert.TestingT, tx pgx.Tx) {
 	var quantity int
-	err := tx.QueryRow(context.Background(), "SELECT quantity FROM sale WHERE id = 1").Scan(&quantity)
+	err := tx.QueryRow(context.Background(), "SELECT balance FROM account WHERE name = 'A' ORDER BY name ASC").Scan(&quantity)
 	assert.NoError(t, err)
-	assert.Equal(t, 3, quantity)
+	assert.Equal(t, 10, quantity)
 }
 
-func sumSales() int {
+func sumBalance() int {
 	conn, bob := createAliceBob(createPool())
 	bob.Release()
 
@@ -51,7 +50,7 @@ func sumSales() int {
 		panic(err)
 	}
 
-	sum := sumSalesWithTx(&tx)
+	sum := sumWithTx(&tx)
 
 	//conn.Release()
 	err = tx.Rollback(context.Background())
@@ -62,17 +61,13 @@ func sumSales() int {
 	return sum
 }
 
-func calc(sale Sale) int {
-	return sale.Quantity * sale.Price
-}
-
-func assertInitSales(t *testing.T, sales []*Sale) {
-	if len(sales) != 2 {
-		t.Errorf("Sales count not equal 2")
+func assertInitAccounts(t *testing.T, list []*Account) {
+	if len(list) != 2 {
+		t.Errorf("acc count not equal 2")
 	}
 
-	if calc(*sales[0]) != 30 || calc(*sales[1]) != 80 {
-		t.Errorf("Sales fixtures wrong")
+	if list[0].Balance != 10 || list[1].Balance != 20 {
+		t.Errorf("acc fixtures wrong")
 	}
 }
 

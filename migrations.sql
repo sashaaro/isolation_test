@@ -1,10 +1,5 @@
-create table public.sale
+create table account
 (
-    id         integer not null
-        constraint sale_pk
-            primary key,
-    product_id integer not null,
-    quantity   integer not null,
-    price      integer
+    name    varchar(255) not null constraint account_pk primary key,
+    balance integer not null
 );
-
