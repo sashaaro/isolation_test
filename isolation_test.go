@@ -173,7 +173,12 @@ func TestLostUpdate(t *testing.T) {
 		bobTx := createTx(bob, bobTxLevel)
 
 		// bob read first record
-		readAndCheckFirstAcc(t, bobTx)
+		var quantity int
+		err := bobTx.
+			QueryRow(ctx, "SELECT balance FROM account WHERE name = 'A' ORDER BY name ASC").
+			Scan(&quantity)
+		assert.NoError(t, err)
+		assert.Equal(t, 10, quantity)
 
 		r, err := aliceTx.Exec(ctx, "UPDATE account SET balance = $1 WHERE name = 'A'", 4)
 		assert.NoError(t, err)

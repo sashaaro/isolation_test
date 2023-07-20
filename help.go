@@ -8,7 +8,6 @@ import (
 	"github.com/georgysavva/scany/v2/pgxscan"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/stretchr/testify/assert"
 )
 
 type Account struct {
@@ -32,13 +31,6 @@ func sumWithTx(tx *pgx.Tx) int {
 		panic(err)
 	}
 	return sum
-}
-
-func readAndCheckFirstAcc(t assert.TestingT, tx pgx.Tx) {
-	var quantity int
-	err := tx.QueryRow(context.Background(), "SELECT balance FROM account WHERE name = 'A' ORDER BY name ASC").Scan(&quantity)
-	assert.NoError(t, err)
-	assert.Equal(t, 10, quantity)
 }
 
 func sumBalance() int {
