@@ -12,3 +12,9 @@ DATABASE_URL=postgresql://root:root@localhost:5432/isolation_level go test
 |B   |20     |
 +--+---------+
 ```
+
+```
+Requirements:
+Account balance record should not be greater then 20
+Sum of balances should not over 40
+```
