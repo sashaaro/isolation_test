@@ -24,9 +24,9 @@ func queryAccounts(tx *pgx.Tx) []*Account {
 	return l
 }
 
-func sumWithTx(tx *pgx.Tx) int {
+func sumWithTx(tx pgx.Tx) int {
 	var sum int
-	err := (*tx).QueryRow(context.Background(), "SELECT sum(balance) FROM account").Scan(&sum)
+	err := tx.QueryRow(context.Background(), "SELECT SUM(balance) FROM account").Scan(&sum)
 	if err != nil {
 		panic(err)
 	}
@@ -42,7 +42,7 @@ func sumBalance() int {
 		panic(err)
 	}
 
-	sum := sumWithTx(&tx)
+	sum := sumWithTx(tx)
 
 	//conn.Release()
 	err = tx.Rollback(context.Background())

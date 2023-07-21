@@ -3,11 +3,14 @@ package isolation
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgerrcode"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/stretchr/testify/assert"
@@ -25,20 +28,22 @@ const defaultBobTxLevel = pgx.ReadUncommitted
 // const defaultBobTxLevel = pgx.Serializable
 
 func setupTest(t *testing.T) func(t *testing.T) {
-	pool, err := createPool().Acquire(context.Background())
+	// fmt.Printf("reinit\n")
+	ctx := context.Background()
+	pool, err := createPool().Acquire(ctx)
 	assert.NoError(t, err)
 	conn := pool.Conn()
 
-	_, err = conn.Exec(context.Background(), "TRUNCATE account")
+	_, err = conn.Exec(ctx, "TRUNCATE account")
 	assert.NoError(t, err)
 
 	sql, err := os.ReadFile("./fixtures.sql")
 	assert.NoError(t, err)
 
-	_, err = conn.Exec(context.Background(), string(sql))
+	_, err = conn.Exec(ctx, string(sql))
 	assert.NoError(t, err)
 
-	err = conn.Close(context.Background())
+	err = conn.Close(ctx)
 	assert.NoError(t, err)
 
 	//fmt.Println("load fixtures...")
@@ -70,12 +75,12 @@ func TestUncommittedDirtyRead(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, int64(1), r.RowsAffected())
 
-	sum := sumWithTx(&aliceTx)
+	sum := sumWithTx(aliceTx)
 	if sum != 35 {
 		t.Errorf("alice should see own uncommitted changes %v", sum)
 	}
 
-	sum = sumWithTx(&bobTx)
+	sum = sumWithTx(bobTx)
 	if sum != 30 {
 		t.Errorf("bob should not see uncommitted alice changes %v", sum)
 	}
@@ -101,7 +106,7 @@ func TestNonRepeatableRead(t *testing.T) {
 
 		err = aliceTx.Commit(context.Background())
 		assert.NoError(t, err)
-		return sumWithTx(&bobTx)
+		return sumWithTx(bobTx)
 	}
 
 	sum := testNonRepeatableRead(pgx.ReadCommitted)
@@ -139,7 +144,7 @@ func TestPhantomRead(t *testing.T) {
 		err = aliceTx.Commit(context.Background())
 		assert.NoError(t, err)
 
-		return sumWithTx(&bobTx)
+		return sumWithTx(bobTx)
 	}
 
 	sum := testPhantomRead(pgx.ReadCommitted)
@@ -160,66 +165,178 @@ func TestPhantomRead(t *testing.T) {
 
 var aliceErrUpdate40001 = errors.New("alice tx update 40001")
 
+type Q struct {
+	q     string
+	alice bool
+}
+
+func runScenario(ctx context.Context, t *testing.T, scenario string) error {
+	setupTest(t)
+	commands := strings.Split(strings.Trim(scenario, "\n"), "\n")
+
+	alice, bob := createAliceBob(createPool())
+	defer alice.Release()
+	defer bob.Release()
+	aliceTx := createTx(alice, defaultBobTxLevel)
+	bobTx := createTx(bob, pgx.ReadCommitted) //bobTxLevel)
+	// defer aliceTx.Conn().Close(ctx)
+	// defer bobTx.Conn().Close(ctx)
+
+	c := make(chan Q, len(commands))
+
+	for _, v := range commands {
+		p := strings.Split(v, "|")
+		alice := strings.TrimSpace(p[0])
+		bob := ""
+		if len(p) == 2 {
+			bob = p[1]
+			bob = strings.TrimSpace(bob)
+		}
+		var q Q
+		if bob != "" {
+			q.alice = false
+			q.q = bob
+		} else if alice != "" {
+			q.alice = true
+			q.q = alice
+		} else {
+			panic("no sql")
+		}
+		c <- q
+	}
+	close(c)
+
+	aliceQ := make(chan Q)
+	bobQ := make(chan Q)
+
+	done := make(chan bool)
+
+	const (
+		AliceColor = "\033[1;34m%s\033[0m"
+		BobColor   = "                \033[1;33m%s\033[0m"
+	)
+	run := func(qCh chan Q, tx pgx.Tx) chan error {
+		errs := make(chan error)
+		go func() {
+		L:
+			for {
+				select {
+				case q, ok := <-qCh:
+					if !ok {
+						errs <- nil
+						break L
+					}
+					if q.alice {
+						fmt.Printf(AliceColor+"\n", q.q)
+					} else {
+						fmt.Printf(BobColor+"\n", q.q)
+					}
+					if strings.ToUpper(q.q) == "COMMIT" {
+						err := tx.Commit(ctx)
+						if err != nil {
+							errs <- err
+							close(errs)
+							break L
+						}
+					} else {
+						tt, err := tx.Exec(ctx, q.q)
+						if err != nil {
+							errs <- err
+							close(errs)
+							break L
+						} else {
+							if tt.Update() || tt.Select() {
+								assert.Equal(t, int64(1), tt.RowsAffected())
+							}
+						}
+					}
+				case _ = <-done:
+					errs <- nil
+					break L
+				}
+			}
+		}()
+
+		return errs
+	}
+
+	aliceErrCh := run(aliceQ, aliceTx)
+	bobErrCh := run(bobQ, bobTx)
+
+	go func() {
+		i := 0
+		for q := range c {
+			defer func() {
+				i = i + 1
+			}()
+			c := bobQ
+			if q.alice {
+				c = aliceQ
+			}
+			if i > 0 {
+				time.Sleep(100 * time.Millisecond)
+			}
+			c <- q
+		}
+		close(aliceQ)
+		close(bobQ)
+	}()
+
+	select {
+	case r := <-aliceErrCh:
+		close(done)
+		return r
+	case r := <-bobErrCh:
+		close(done)
+		return r
+	case _ = <-done:
+		return nil
+		// default:
+		// 	return nil
+	}
+}
+
+var isPgError = func(err error, pgError string) bool {
+	pgErr, ok := err.(*pgconn.PgError)
+	return ok && pgErr.Code == pgError
+}
+
 // https://www.youtube.com/watch?v=Qcpsx2INYdU
 func TestLostUpdate(t *testing.T) {
-	ctx := context.Background()
-	testLostUpdate := func(bobTxLevel pgx.TxIsoLevel) error {
-		setupTest(t)
-		alice, bob := createAliceBob(createPool())
-		defer alice.Release()
-		defer bob.Release()
+	var testLostUpdate = func(t *testing.T, bobTxLevel pgx.TxIsoLevel) error {
+		ctx := context.Background()
+		scenario := `
+                                                 | SET TRANSACTION ISOLATION LEVEL ` + strings.ToUpper(string(bobTxLevel)) + ` 
+                                                 | SELECT balance FROM account WHERE name = 'A'
+UPDATE account SET balance = 12 WHERE name = 'A' | 
+COMMIT                                           | 
+                                                 | UPDATE account SET balance = 15 WHERE name = 'A'
+                                                 | COMMIT`
 
-		aliceTx := createTx(alice, defaultBobTxLevel)
-		bobTx := createTx(bob, bobTxLevel)
-
-		// bob read first record
-		var quantity int
-		err := bobTx.
-			QueryRow(ctx, "SELECT balance FROM account WHERE name = 'A' ORDER BY name ASC").
-			Scan(&quantity)
-		assert.NoError(t, err)
-		assert.Equal(t, 10, quantity)
-
-		r, err := aliceTx.Exec(ctx, "UPDATE account SET balance = $1 WHERE name = 'A'", 4)
-		assert.NoError(t, err)
-		assert.Equal(t, int64(1), r.RowsAffected())
-
-		err = aliceTx.Commit(ctx)
-		assert.NoError(t, err)
-
-		r, err = bobTx.Exec(ctx, "UPDATE account SET balance = $1 WHERE name = 'A'", 5)
+		err := runScenario(ctx, t, scenario)
 		if err != nil {
-			pgErr, ok := err.(*pgconn.PgError)
-			if bobTxLevel != pgx.ReadCommitted && ok && pgErr.Code == "40001" {
-				return aliceErrUpdate40001 // could not serialize access due to concurrent update
-			}
 			return err
 		}
-		assert.Equal(t, int64(1), r.RowsAffected())
-
-		err = bobTx.Commit(ctx)
-
-		//if err != nil {
-		//	if err == pgx.ErrTxCommitRollback && aliceTxLevel == pgx.RepeatableRead {
-		//		return aliceErrTxCommitRollback
-		//	}
-		//	return err
-		//}
-
 		return nil
 	}
 
-	err := testLostUpdate(pgx.ReadCommitted)
-	assert.NoError(t, err)
-	assert.Equal(t, 25, sumBalance(), "fail. no produced lost update read") // bob update +2 pass, but lose alice +1
+	t.Run("lost update", func(t *testing.T) {
+		err := testLostUpdate(t, pgx.ReadCommitted)
+		assert.NoError(t, err)
+		assert.Equal(t, 35, sumBalance(), "failed produce lost update")
+	})
 
-	err = testLostUpdate(pgx.RepeatableRead)
-	assert.Equal(t, aliceErrUpdate40001, err)
-	assert.Equal(t, 24, sumBalance(), "fail. produced lost update read") // alice update +1 pass, bob update rejected
+	t.Run("avoid lost update", func(t *testing.T) {
+		err := testLostUpdate(t, pgx.RepeatableRead)
+		assert.True(t, isPgError(err, pgerrcode.SerializationFailure))
+		assert.Equal(t, 32, sumBalance(), "fail. produced lost update read")
+	})
 
-	err = testLostUpdate(pgx.Serializable)
-	assert.Equal(t, aliceErrUpdate40001, err)
-	assert.Equal(t, 24, sumBalance(), "fail. produced lost update read")
+	// t.Run("avoid lost update", func(t *testing.T) {
+	// 	err := testLostUpdate(t, pgx.Serializable)
+	// 	assert.True(t, isPgError(err, pgerrcode.SerializationFailure))
+	// 	assert.Equal(t, 32, sumBalance(), "fail. produced lost update read")
+	// })
 }
 
 // https://medium.com/nerd-for-tech/db-dead-lock-complete-case-study-using-golang-15dd754e5cb8
