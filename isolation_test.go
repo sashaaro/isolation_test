@@ -74,6 +74,7 @@ func (s *MySuite) TestPhantomRead() {
                                        | SET TRANSACTION ISOLATION LEVEL ` + strings.ToUpper(string(bobTxLevel)) + ` 
                                        | ` + selectAllSQL + ` 
 INSERT INTO account values ('C', 5, 3) | 
+DELETE FROM account WHERE name = 'A'   | 
 COMMIT                                 | 
                                        | ` + selectSumSQL + ` 
                                        | COMMIT`
@@ -88,7 +89,7 @@ COMMIT                                 |
 	s.Run("phantom read", func() {
 		sum, err := testPhantomRead(pgx.ReadCommitted)
 		s.Require().NoError(err)
-		s.Require().Equal(35, sum, "bob can see alice insert, phantom read produced")
+		s.Require().Equal(25, sum, "bob can see alice insert, phantom read produced")
 	})
 
 	s.Run("avoid phantom read", func() {

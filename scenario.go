@@ -210,11 +210,6 @@ func (s *MySuite) runScenario(scenario string) (int, error) {
 					msg = "ERROR: " + msg
 				}
 				fmt.Printf(bobPadding+errorColor+"\n", msg)
-				// if ok {
-				// 	fmt.Printf(bobPadding+ErrorColor+"\n", pgErr.Error())
-				// } else {
-				// 	fmt.Printf(bobPadding+ErrorColor+"\n", "ERROR: "+er.Error())
-				// }
 				return lastVal, er
 			} else {
 				success += 1
