@@ -46,6 +46,14 @@ func (s *MySuite) TearDownSuite() {
 }
 
 func TestMySuite(t *testing.T) {
-	p = createPool()
+	databaseUrl := os.Getenv("DATABASE_URL")
+	if databaseUrl == "" {
+		databaseUrl = "postgresql://root:root@localhost:5432/acid"
+	}
+	var err error
+	p, err = pgxpool.New(context.Background(), databaseUrl)
+	if err != nil {
+		panic(err)
+	}
 	suite.Run(t, new(MySuite))
 }

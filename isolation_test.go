@@ -12,30 +12,17 @@ import (
 // https://en.wikipedia.org/wiki/Isolation_(database_systems)#Phantom_reads
 // https://www.youtube.com/watch?v=e9a4ESSHQ74
 
-// any tx level is allowed, test should pass, no effect for Alice's transaction
-const defaultBobTxLevel = pgx.ReadUncommitted
-
-// const defaultBobTxLevel = pgx.RepeatableRead
-// const defaultBobTxLevel = pgx.Serializable
-
 var selectAllSQL = "SELECT name, balance FROM account"
 var selectSumSQL = "SELECT SUM(balance) FROM account"
 
 func (s *MySuite) TestUncommittedDirtyRead() {
-	var test = func(bobTxLevel pgx.TxIsoLevel) (int, error) {
-		scenario := `
-                                                          | SET TRANSACTION ISOLATION LEVEL ` + strings.ToUpper(string(bobTxLevel)) + ` 
+	bobLv := strings.ToUpper(string(pgx.ReadCommitted))
+	sum, err := s.runScenario(`
+                                                          | SET TRANSACTION ISOLATION LEVEL ` + bobLv + ` 
 UPDATE account SET balance = balance + 5 WHERE name = 'A' | 
 		                                                      | SELECT balance FROM account WHERE name = 'A'
-`
-		sum, err := s.runScenario(scenario)
-		if err != nil {
-			return 0, err
-		}
-		return sum, nil
-	}
+`)
 
-	sum, err := test(pgx.ReadCommitted)
 	s.Require().NoError(err)
 	s.Require().Equal(10, sum, "bob should not see alice uncommitted changes")
 }

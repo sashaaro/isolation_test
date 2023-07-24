@@ -38,8 +38,8 @@ COMMIT       -- A balance = 10 + 2                        |
 }
 
 // Несогласованная запись
-func (s *MySuite) TestDfs() {
-	var testUnconsistWrite = func(lv pgx.TxIsoLevel, commentBobReadSum bool, forUpdate bool) error {
+func (s *MySuite) TestInconsistentWrite() {
+	var test = func(lv pgx.TxIsoLevel, commentBobReadSum bool, forUpdate bool) error {
 		l := strings.ToUpper(string(lv))
 
 		comment := ""
@@ -67,31 +67,31 @@ COMMIT                                                      |
 	}
 
 	s.Run("repeatable read allow violate", func() {
-		err := testUnconsistWrite(pgx.RepeatableRead, false, false)
+		err := test(pgx.RepeatableRead, false, false)
 		s.Require().NoError(err)
 		s.Require().Equal(44, sumBalance(), "violate requirement - balance sum should not greater 40")
 	})
 
 	s.Run("serializable", func() {
-		err := testUnconsistWrite(pgx.Serializable, false, false)
+		err := test(pgx.Serializable, false, false)
 		s.Require().True(isPgError(err, pgerrcode.SerializationFailure))
 		s.Require().Equal(38, sumBalance(), "not allow increase and violate requirement, alice changes applied only")
 	})
 
 	s.Run("serializable + bob not select accounts before", func() {
-		err := testUnconsistWrite(pgx.Serializable, true, false)
+		err := test(pgx.Serializable, true, false)
 		s.Require().NoError(err)
 		s.Require().Equal(44, sumBalance(), "violate requirement even serializable but bob not read sum before update")
 	})
 
 	s.Run("repeatable read for update should failure", func() {
-		err := testUnconsistWrite(pgx.RepeatableRead, false, true)
+		err := test(pgx.RepeatableRead, false, true)
 		s.Require().True(isPgError(err, pgerrcode.SerializationFailure))
 		s.Require().Equal(38, sumBalance(), "not allow increase and violate requirement, alice changes applied only")
 	})
 
 	s.Run("read committed for update should wait", func() {
-		err := testUnconsistWrite(pgx.ReadCommitted, false, true)
+		err := test(pgx.ReadCommitted, false, true)
 		s.Require().NoError(err)
 		s.Require().Equal(44, sumBalance(), "will not violate requirement, cause bob select would be wait alice update and not pass condition")
 	})
