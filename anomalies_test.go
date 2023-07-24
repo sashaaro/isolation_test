@@ -37,13 +37,56 @@ COMMIT       -- A balance = 10 + 2                        |
 	})
 }
 
+// Несогласованное чтение
+func (s *MySuite) TestInconsistentRead() {
+	var test = func(lv pgx.TxIsoLevel, selectForShare bool) ([]int, error) {
+		l := strings.ToUpper(string(lv))
+
+		forShare := ""
+		if selectForShare {
+			forShare = " FOR SHARE"
+		}
+
+		scenario := `
+SET TRANSACTION ISOLATION LEVEL ` + l + `                   |  
+                                                            | UPDATE account SET balance = balance - 15 WHERE name = 'B'
+SELECT balance FROM account WHERE name = 'B'` + forShare + `|
+                                                            | UPDATE account SET balance = balance + 15 WHERE name = 'A'
+                                                            | COMMIT
+SELECT balance FROM account WHERE name = 'A'` + forShare + `|
+COMMIT                                                      |
+`
+
+		sum, err := s.runScenario(scenario)
+		return sum, err
+	}
+
+	s.Run("read commited and inconsistent read", func() {
+		v, err := test(pgx.ReadCommitted, false)
+		s.Require().NoError(err)
+		s.Require().Equal([]int{20, 25}, v, "wrong sum - 45, expected 30") // need use sum(balance) for consistancy
+	})
+
+	s.Run("read commited + for share for consistent read", func() {
+		v, err := test(pgx.ReadCommitted, true)
+		s.Require().NoError(err)
+		s.Require().Equal([]int{5, 25}, v, "wrong sum - 45, expected 30")
+	})
+
+	s.Run("read commited and wrong write data", func() {
+		v, err := test(pgx.RepeatableRead, false)
+		s.Require().NoError(err)
+		s.Require().Equal([]int{20, 10}, v, "read consistancy data but without last bob changes")
+	})
+}
+
 // Несогласованная запись
 func (s *MySuite) TestInconsistentWrite() {
-	var test = func(lv pgx.TxIsoLevel, commentBobReadSum bool, forUpdate bool) error {
+	var test = func(lv pgx.TxIsoLevel, notBobSelectAccounts bool, forUpdate bool) ([]int, error) {
 		l := strings.ToUpper(string(lv))
 
 		comment := ""
-		if commentBobReadSum {
+		if notBobSelectAccounts {
 			comment = "--"
 		}
 
@@ -55,44 +98,47 @@ func (s *MySuite) TestInconsistentWrite() {
                                                             | SET TRANSACTION ISOLATION LEVEL ` + l + ` 
 SET TRANSACTION ISOLATION LEVEL ` + l + `                   |
 SELECT * FROM account` + sForUpdate + `                     |
+` + sumBalanceSql + `                                       |
  -- sum = 30 allow increase to 38, not over 40		          | ` + comment + ` SELECT * FROM account` + sForUpdate + ` -- return 30 if will not wait (read commited + for update)
-UPDATE account SET balance = balance + 8 WHERE name = 'A'   | -- allow increase to 36, not over 40
+                                                            | --` + sumBalanceSql + ` -- allow increase to 36, not over 40
+UPDATE account SET balance = balance + 8 WHERE name = 'A'   | 
 COMMIT                                                      |
                                                             | UPDATE account SET balance = balance + 6 WHERE name = 'B'
                                                             | COMMIT
 `
 
-		_, err := s.runScenario(scenario)
-		return err
+		res, err := s.runScenario(scenario)
+		return res, err
 	}
 
 	s.Run("repeatable read allow violate", func() {
-		err := test(pgx.RepeatableRead, false, false)
+		res, err := test(pgx.RepeatableRead, false, false)
 		s.Require().NoError(err)
+		s.Require().Equal(30, res[0], "alice sum correctly")
 		s.Require().Equal(44, sumBalance(), "violate requirement - balance sum should not greater 40")
 	})
 
 	s.Run("serializable", func() {
-		err := test(pgx.Serializable, false, false)
+		_, err := test(pgx.Serializable, false, false)
 		s.Require().True(isPgError(err, pgerrcode.SerializationFailure))
 		s.Require().Equal(38, sumBalance(), "not allow increase and violate requirement, alice changes applied only")
 	})
 
-	s.Run("serializable + bob not select accounts before", func() {
-		err := test(pgx.Serializable, true, false)
-		s.Require().NoError(err)
-		s.Require().Equal(44, sumBalance(), "violate requirement even serializable but bob not read sum before update")
-	})
-
-	s.Run("repeatable read for update should failure", func() {
-		err := test(pgx.RepeatableRead, false, true)
-		s.Require().True(isPgError(err, pgerrcode.SerializationFailure))
-		s.Require().Equal(38, sumBalance(), "not allow increase and violate requirement, alice changes applied only")
-	})
-
-	s.Run("read committed for update should wait", func() {
-		err := test(pgx.ReadCommitted, false, true)
+	s.Run("read committed + for update should wait", func() {
+		_, err := test(pgx.ReadCommitted, false, true)
 		s.Require().NoError(err)
 		s.Require().Equal(44, sumBalance(), "will not violate requirement, cause bob select would be wait alice update and not pass condition")
 	})
+
+	s.Run("repeatable read + for update should failure", func() {
+		_, err := test(pgx.RepeatableRead, false, true)
+		s.Require().True(isPgError(err, pgerrcode.SerializationFailure))
+		s.Require().Equal(38, sumBalance(), "not allow increase and violate requirement, alice changes applied only")
+	})
+
+	// s.Run("serializable not work if bob not select accounts before", func() {
+	// 	_, err := test(pgx.Serializable, true, false)
+	// 	s.Require().NoError(err)
+	// 	s.Require().Equal(44, sumBalance(), "serializable should work only if bob select accounts before update")
+	// })
 }

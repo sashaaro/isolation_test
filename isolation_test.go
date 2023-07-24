@@ -24,7 +24,7 @@ UPDATE account SET balance = balance + 5 WHERE name = 'A' |
 `)
 
 	s.Require().NoError(err)
-	s.Require().Equal(10, sum, "bob should not see alice uncommitted changes")
+	s.Require().Equal(10, Last(sum), "bob should not see alice uncommitted changes")
 }
 
 func (s *MySuite) TestNonRepeatableRead() {
@@ -40,7 +40,7 @@ COMMIT                                                    |
 		if err != nil {
 			return 0, err
 		}
-		return sum, nil
+		return Last(sum), nil
 	}
 
 	s.Run("non-repeatable read", func() {
@@ -70,7 +70,7 @@ COMMIT                                 |
 		if err != nil {
 			return 0, err
 		}
-		return sum, nil
+		return Last(sum), nil
 	}
 
 	s.Run("phantom read", func() {
@@ -104,7 +104,7 @@ COMMIT                                                          |
 		if err != nil {
 			return 0, err
 		}
-		return sum, nil
+		return Last(sum), nil
 	}
 
 	s.Run("serializable", func() {

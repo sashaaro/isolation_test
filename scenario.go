@@ -35,7 +35,7 @@ const (
 // 	return tx
 // }
 
-func (s *MySuite) runScenario(scenario string) (int, error) {
+func (s *MySuite) runScenario(scenario string) ([]int, error) {
 	ctx := context.Background()
 	commands := strings.Split(strings.Trim(scenario, "\n"), "\n")
 
@@ -49,7 +49,6 @@ func (s *MySuite) runScenario(scenario string) (int, error) {
 
 	c := make(chan *Q, len(commands))
 
-	var lastSelect *Q
 	for _, v := range commands {
 		p := strings.Split(v, "|")
 		alice := strings.TrimSpace(p[0])
@@ -86,9 +85,6 @@ func (s *MySuite) runScenario(scenario string) (int, error) {
 		} else {
 			continue
 		}
-		if strings.HasPrefix(strings.ToUpper(q.q), "SELECT") {
-			lastSelect = q
-		}
 		c <- q
 	}
 	close(c)
@@ -98,7 +94,7 @@ func (s *MySuite) runScenario(scenario string) (int, error) {
 
 	done := make(chan bool)
 
-	var lastVal int
+	var result []int
 	run := func(qCh chan *Q, tx pgx.Tx) chan error {
 		errs := make(chan error)
 		go func() {
@@ -124,9 +120,10 @@ func (s *MySuite) runScenario(scenario string) (int, error) {
 						}
 					} else {
 						var err error
-						if lastSelect == q {
+						if strings.HasPrefix(strings.ToUpper(q.q), "SELECT") {
 							row := tx.QueryRow(ctx, q.q)
-							err = row.Scan(&lastVal)
+							var v int
+							err = row.Scan(&v)
 							if err != nil {
 								if strings.Contains(err.Error(), "number of field descriptions must equal number of destinations") {
 									err = nil
@@ -134,6 +131,8 @@ func (s *MySuite) runScenario(scenario string) (int, error) {
 								if _, ok := err.(pgx.ScanArgError); ok {
 									err = nil
 								}
+							} else {
+								result = append(result, v)
 							}
 
 						} else {
@@ -197,7 +196,7 @@ func (s *MySuite) runScenario(scenario string) (int, error) {
 					msg = "ERROR: " + msg
 				}
 				fmt.Printf(errorColor+"\n", msg)
-				return lastVal, er
+				return result, er
 			} else {
 				success += 1
 			}
@@ -210,12 +209,12 @@ func (s *MySuite) runScenario(scenario string) (int, error) {
 					msg = "ERROR: " + msg
 				}
 				fmt.Printf(bobPadding+errorColor+"\n", msg)
-				return lastVal, er
+				return result, er
 			} else {
 				success += 1
 			}
 		case _ = <-done:
-			return lastVal, nil
+			return result, nil
 		}
 	}
 }

@@ -19,11 +19,21 @@ func aBalance() int {
 	return balance
 }
 
+var sumBalanceSql = "SELECT SUM(balance) FROM account"
+
 func sumBalance() int {
 	var sum int
-	err := p.QueryRow(context.Background(), "SELECT SUM(balance) FROM account").Scan(&sum)
+	err := p.QueryRow(context.Background(), sumBalanceSql).Scan(&sum)
 	if err != nil {
 		panic(err)
 	}
 	return sum
+}
+
+func Last[T any](l []T) T {
+	var def T
+	if len(l) > 0 {
+		def = l[len(l)-1]
+	}
+	return def
 }

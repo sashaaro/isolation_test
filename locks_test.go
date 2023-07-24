@@ -17,7 +17,7 @@ COMMIT -- run after 15 milliseconds                       |
 `
 
 		sum, err := s.runScenario(scenario)
-		return sum, err
+		return Last(sum), err
 	}
 
 	s.Run("lock update with timeout", func() {
@@ -82,7 +82,7 @@ COMMIT                                 |
 `
 
 		res, err := s.runScenario(scenario)
-		if err == nil && res != 123 {
+		if err == nil && Last(res) != 123 {
 			panic("last select not execute") //
 		}
 		return err
@@ -149,8 +149,8 @@ SELECT * FROM account WHERE name = 'A' FOR UPDATE |
 -- UPDATE account SET balance = 1 WHERE name = 'A'|
                                                   | SELECT balance FROM account ORDER BY name ASC FOR SHARE SKIP LOCKED LIMIT 1
 `
-
-		return s.runScenario(scenario)
+		l, err := s.runScenario(scenario)
+		return Last(l), err
 	}
 
 	r, err := testSkipLocked(pgx.ReadCommitted)
