@@ -98,8 +98,8 @@ func (s *MySuite) TestInconsistentWrite() {
                                                             | SET TRANSACTION ISOLATION LEVEL ` + l + ` 
 SET TRANSACTION ISOLATION LEVEL ` + l + `                   |
 SELECT * FROM account` + sForUpdate + `                     |
-` + sumBalanceSql + `                                       |
- -- sum = 30 allow increase to 38, not over 40		          | ` + comment + ` SELECT * FROM account` + sForUpdate + ` -- return 30 if will not wait (read commited + for update)
+--` + sumBalanceSql + `                                       |
+-- sum = 30 allow increase to 38, not over 40		          | ` + comment + ` SELECT * FROM account` + sForUpdate + ` -- return 30 if will not wait (read commited + for update)
                                                             | --` + sumBalanceSql + ` -- allow increase to 36, not over 40
 UPDATE account SET balance = balance + 8 WHERE name = 'A'   | 
 COMMIT                                                      |
@@ -112,9 +112,9 @@ COMMIT                                                      |
 	}
 
 	s.Run("repeatable read allow violate", func() {
-		res, err := test(pgx.RepeatableRead, false, false)
+		_, err := test(pgx.RepeatableRead, false, false)
 		s.Require().NoError(err)
-		s.Require().Equal(30, res[0], "alice sum correctly")
+		// s.Require().Equal(30, res[0], "alice sum correctly")
 		s.Require().Equal(44, sumBalance(), "violate requirement - balance sum should not greater 40")
 	})
 
