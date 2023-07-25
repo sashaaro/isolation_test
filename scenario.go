@@ -3,10 +3,13 @@ package isolation
 import (
 	"context"
 	"fmt"
+	"strings"
+	"sync"
+	// "time"
+
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
-	"strings"
-	"time"
+	// "time"
 )
 
 type Q struct {
@@ -22,18 +25,10 @@ const (
 	errorColor = "\033[1;35m%s\033[0m"
 )
 
-// func createTx(isolationLevel pgx.TxIsoLevel) pgx.Tx {
-// 	tx, err := p.BeginTx(context.Background(), pgx.TxOptions{
-// 		IsoLevel:       isolationLevel,
-// 		AccessMode:     pgx.ReadWrite,
-// 		DeferrableMode: pgx.NotDeferrable,
-// 	})
-// 	if err != nil {
-// 		panic(err)
-// 	}
-//
-// 	return tx
-// }
+type Result struct {
+	res *int
+	err error
+}
 
 func (s *MySuite) runScenario(scenario string) ([]int, error) {
 	ctx := context.Background()
@@ -95,8 +90,60 @@ func (s *MySuite) runScenario(scenario string) ([]int, error) {
 	done := make(chan bool)
 
 	var result []int
+
+	exec := func(q *Q, tx pgx.Tx) chan Result {
+		ch := make(chan Result)
+		var wg sync.WaitGroup
+
+		wg.Add(1)
+		go func() {
+			wg.Done()
+
+			if q.alice {
+				fmt.Printf(aliceColor+"\n", q.q)
+			} else {
+				fmt.Printf(bobPadding+bobColor+"\n", q.q)
+			}
+			r := Result{}
+			if strings.ToUpper(q.q) == "COMMIT" {
+				err := tx.Commit(ctx)
+				r.err = err
+			} else if strings.HasPrefix(strings.ToUpper(q.q), "SELECT") {
+				row := tx.QueryRow(ctx, q.q)
+				var v *int
+				err := row.Scan(v)
+				if err != nil {
+					fmt.Printf("err: %v!!", err)
+					if strings.Contains(err.Error(), "number of field descriptions must equal number of destinations") {
+						err = nil
+					}
+					if _, ok := err.(pgx.ScanArgError); ok {
+						err = nil
+					}
+					r.err = err
+				} else {
+					fmt.Printf("v: %v!!", v)
+					r.res = v
+				}
+			} else {
+				tt, err := tx.Exec(ctx, q.q)
+				if err == nil && (tt.Update() || tt.Select()) {
+					s.Require().Greater(tt.RowsAffected(), int64(0))
+				}
+				r.err = err
+			}
+
+			// time.Sleep(50 * time.Millisecond)
+			ch <- r
+			close(ch)
+		}()
+		wg.Wait()
+		return ch
+	}
+
 	run := func(qCh chan *Q, tx pgx.Tx) chan error {
 		errs := make(chan error)
+
 		go func() {
 		L:
 			for {
@@ -106,56 +153,20 @@ func (s *MySuite) runScenario(scenario string) ([]int, error) {
 						errs <- nil
 						break L
 					}
-					if q.alice {
-						fmt.Printf(aliceColor+"\n", q.q)
-					} else {
-						fmt.Printf(bobPadding+bobColor+"\n", q.q)
-					}
-					if strings.ToUpper(q.q) == "COMMIT" {
-						err := tx.Commit(ctx)
-						if err != nil {
-							errs <- err
-							close(errs)
-							break L
-						}
-					} else {
-						var err error
-						if strings.HasPrefix(strings.ToUpper(q.q), "SELECT") {
-							row := tx.QueryRow(ctx, q.q)
-							var v int
-							err = row.Scan(&v)
-							if err != nil {
-								if strings.Contains(err.Error(), "number of field descriptions must equal number of destinations") {
-									err = nil
-								}
-								if _, ok := err.(pgx.ScanArgError); ok {
-									err = nil
-								}
-							} else {
-								result = append(result, v)
-							}
-
-						} else {
-							tt, err := tx.Exec(ctx, q.q)
-							if err == nil && (tt.Update() || tt.Select()) {
-								s.Require().Greater(tt.RowsAffected(), int64(0))
-							} else if err != nil {
-								errs <- err
-								close(errs)
-								break L
-							}
-						}
-						if err != nil {
-							errs <- err
-							close(errs)
-							break L
-						}
+					// time.Sleep(20 * time.Millisecond)
+					res := <-exec(q, tx)
+					if res.err != nil {
+						errs <- res.err
+						break L
+					} else if res.res != nil {
+						result = append(result, *res.res)
 					}
 				case _ = <-done:
 					errs <- nil
 					break L
 				}
 			}
+			close(errs)
 		}()
 
 		return errs
@@ -171,9 +182,9 @@ func (s *MySuite) runScenario(scenario string) ([]int, error) {
 			if cQ.alice {
 				c = aliceQ
 			}
-			if i > 0 {
-				time.Sleep(15 * time.Millisecond)
-			}
+			// if i > 0 {
+			// 	time.Sleep(15 * time.Millisecond)
+			// }
 			c <- cQ
 			i = i + 1
 		}
